@@ -27,6 +27,11 @@ h1{margin:0;font-size:1.1rem;color:#888;font-weight:600;letter-spacing:1px}
 #msg{min-height:3em;text-align:center;color:#aaa;max-width:340px;line-height:1.4}
 #msg.ok{color:#4ade80}#msg.err{color:#f87171}
 #q{color:#facc15;font-size:.9rem}
+#notes{width:100%;max-width:420px}
+#notes h2{font-size:.85rem;color:#777;font-weight:600;letter-spacing:1px;margin:10px 0 6px}
+.n{background:#1b1b1b;border-radius:10px;padding:10px 12px;margin:8px 0;display:flex;gap:8px;align-items:center}
+.n div{flex:1;min-width:0}.n b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.95rem}
+.n small{color:#888}.n button{background:#333;color:#eee;border:0;border-radius:8px;padding:8px 10px;font-size:.85rem}
 button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22px;font-size:1rem;cursor:pointer}
 </style>
 </head>
@@ -39,7 +44,8 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
   <div id="msg"></div>
   <div id="q"></div>
   <button id="retry" class="s" hidden>Invia adesso</button>
-  <small style="color:#555">web app v1.0.6</small>
+  <section id="notes"></section>
+  <small style="color:#555">web app v1.0.7</small>
 </main>
 <script>
 const RATE = 16000, PART_SEC = 480, MAX_SEC = 3600;
@@ -122,6 +128,7 @@ function wav(int16) {
 }
 
 async function closePart(last) {
+  if (last) remember(recId);
   partNo++;
   const part = partNo, slice = buf.slice(0, idx);
   buf = new Int16Array(PART_SEC * RATE); idx = 0;
@@ -185,6 +192,39 @@ async function stop() {
   say('Invio…');
   await closePart(true);
 }
+
+// ---------- le mie note: prompt pronti da scaricare ----------
+function myNotes() { try { return JSON.parse(localStorage.getItem('v2c_notes') || '[]'); } catch (e) { return []; } }
+function remember(id) { const l = myNotes().filter(x => x.id !== id); l.unshift({ id, t: Date.now() }); localStorage.setItem('v2c_notes', JSON.stringify(l.slice(0, 30))); }
+const cache = {};
+async function loadNotes() {
+  const box = $('notes'), list = myNotes();
+  if (!list.length) { box.innerHTML = ''; return; }
+  for (const n of list) if (!cache[n.id]) {
+    try { const r = await fetch('/result/' + encodeURIComponent(n.id), { cache: 'no-store' }); if (r.ok) cache[n.id] = await r.json(); } catch (e) {}
+  }
+  box.innerHTML = '<h2>LE MIE NOTE</h2>';
+  for (const n of list) {
+    const d = cache[n.id], row = document.createElement('div'); row.className = 'n';
+    const when = new Date(n.t).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    row.innerHTML = '<div><b></b><small></small></div>';
+    row.querySelector('b').textContent = d ? d.name.replace(/\.md$/, '').replace(/^\d{4}-\d\d-\d\d_\d\d-\d\d_/, '') : 'In elaborazione sul computer…';
+    row.querySelector('small').textContent = when + (d ? ' · ' + d.user : '');
+    if (d) {
+      const dl = document.createElement('button'); dl.textContent = 'Scarica'; dl.onclick = () => saveFile(d);
+      const cp = document.createElement('button'); cp.textContent = 'Copia'; cp.onclick = async () => { try { await navigator.clipboard.writeText(d.md.split('\n\n---\n\n')[0]); say('Prompt copiato', 'ok'); } catch (e) { say('Copia non riuscita', 'err'); } };
+      row.append(dl, cp);
+    }
+    box.appendChild(row);
+  }
+}
+async function saveFile(d) {
+  const file = new File([d.md], d.name, { type: 'text/markdown' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: d.name }); return; } catch (e) { if (e.name === 'AbortError') return; } }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = d.name; document.body.appendChild(a); a.click(); a.remove();
+}
+setInterval(() => { if (document.visibilityState === 'visible') loadNotes(); }, 20000);
+loadNotes();
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
 showQ(); flush();
