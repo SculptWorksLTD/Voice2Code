@@ -1,0 +1,146 @@
+name: build
+
+# Compila Voice2Code dal codice privato (Voice2Code-Source) e pubblica qui la release.
+# Parte solo quando cambia il file VERSION (nessuna build se non cambia niente).
+on:
+  push:
+    branches: [main]
+    paths: ['VERSION']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SRC_REPO: SculptWorksLTD/Voice2Code-Source
+  KEY_PASSWORD: voice2code-updater
+
+jobs:
+  keys:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: echo "version=$(tr -d ' \n' < VERSION)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SRC_REPO }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+          path: src
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Chiavi di firma aggiornamenti (create una volta sola, salvate nel codice privato)
+        working-directory: src
+        run: |
+          if [ ! -f keys/updater.key ]; then
+            mkdir -p keys
+            npx -y @tauri-apps/cli@2 signer generate --ci -f -p "$KEY_PASSWORD" -w keys/updater.key
+            git config user.name "voice2code-ci"
+            git config user.email "ci@users.noreply.github.com"
+            git add keys
+            git commit -m "Chiavi firma aggiornamenti"
+            git push origin HEAD:main
+          fi
+          test -f keys/updater.key.pub
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keys
+          path: src/keys/
+          retention-days: 1
+
+  build:
+    needs: keys
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SRC_REPO }}
+          token: ${{ secrets.SOURCE_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: keys
+          path: keys
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+
+      - name: Controllo modelli voce scaricabili
+        shell: bash
+        continue-on-error: true
+        run: |
+          for m in wespeaker_en_voxceleb_resnet34.onnx 3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx nemo_en_titanet_small.onnx; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -L "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/$m")
+            echo "MODELLO $m -> $code"
+          done
+
+      - name: Versione, chiave pubblica e firma
+        shell: bash
+        working-directory: app
+        run: |
+          V="${{ needs.keys.outputs.version }}"
+          PUB="$(cat ../keys/updater.key.pub)"
+          node -e "
+            const fs=require('fs'),f='src-tauri/tauri.conf.json',c=JSON.parse(fs.readFileSync(f));
+            c.version='$V';c.plugins.updater.pubkey=process.argv[1];
+            fs.writeFileSync(f,JSON.stringify(c,null,2));" "$PUB"
+          sed -i.bak "s/^version = \".*\"/version = \"$V\"/" src-tauri/Cargo.toml
+          {
+            echo "TAURI_SIGNING_PRIVATE_KEY<<EOF"
+            cat ../keys/updater.key
+            echo
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+          npm install
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.KEY_PASSWORD }}
+        with:
+          projectPath: app
+          owner: SculptWorksLTD
+          repo: Voice2Code
+          commitish: main
+          tagName: v${{ needs.keys.outputs.version }}
+          releaseName: Voice2Code v${{ needs.keys.outputs.version }}
+          releaseBody: "Mac: scarica il file .dmg. Windows: scarica il file .exe."
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: ${{ matrix.args }}
+
+  cleanup:
+    needs: [keys, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Elimina le release precedenti (resta solo l'ultima)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          R="${{ github.repository }}"
+          gh release list -R "$R" --limit 100 --json tagName -q '.[].tagName' | grep -vx "v${{ needs.keys.outputs.version }}" | while read -r t; do
+            gh release delete "$t" -R "$R" -y --cleanup-tag
+          done
