@@ -45,7 +45,7 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
   <div id="q"></div>
   <button id="retry" class="s" hidden>Invia adesso</button>
   <section id="notes"></section>
-  <small style="color:#555">web app v1.0.9</small>
+  <small style="color:#555">web app v1.0.10</small>
 </main>
 <script>
 const RATE = 16000, PART_SEC = 480, MAX_SEC = 3600;
@@ -143,34 +143,64 @@ function push(s) {
   if (idx >= buf.length) closePart(false);
 }
 
-$('rec').onclick = () => { if (recording) stop(); else start().catch(e => say('Non riesco ad avviare la registrazione: ' + e.message, 'err')); };
+let armed = false;
+$('rec').onclick = () => {
+  const fail = e => say('Non riesco ad avviare la registrazione: ' + e.message, 'err');
+  if (recording) return stop();
+  if (armed) { armed = false; try { ac.resume(); } catch (e) {} return begin().catch(fail); }
+  start().catch(fail);
+};
 $('retry').onclick = flush;
 window.addEventListener('online', flush);
 document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && flush());
 
 async function start() {
-  // iPhone: l'audio va acceso subito, dentro il tocco, alla frequenza del telefono
+  // iPhone: prima il microfono, poi l'audio (alla frequenza del telefono), senza mai restare in attesa
   const AC = window.AudioContext || window.webkitAudioContext;
-  try { if (ac && ac.state !== 'closed') ac.close(); } catch (e) {}
-  try { ac = new AC(); } catch (e) { return say('Audio non disponibile su questo browser.', 'err'); }
-  const resumed = ac.resume().catch(() => {});
-  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
-  catch (e) { try { ac.close(); } catch (x) {} return say('Microfono non permesso: Impostazioni › Safari › Microfono › Consenti.', 'err'); }
-  await resumed;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  $('rec').disabled = true;
+  say('Accendo il microfono…');
   try {
-    if (ac.state !== 'running') await ac.resume();
+    stream = await Promise.race([
+      navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }),
+      sleep(15000).then(() => { throw new Error('nessuna risposta dal microfono'); }),
+    ]);
+  } catch (e) {
+    $('rec').disabled = false;
+    return say('Microfono non disponibile (' + e.message + '). Controlla Impostazioni › Safari › Microfono › Consenti.', 'err');
+  }
+  try { if (ac && ac.state !== 'closed') ac.close(); } catch (e) {}
+  try {
+    ac = new AC();
+    for (let i = 0; i < 3 && ac.state !== 'running'; i++) await Promise.race([ac.resume().catch(() => {}), sleep(800)]);
+  } catch (e) {}
+  if (!ac || ac.state !== 'running') {
+    // Safari vuole un secondo tocco per accendere l'audio
+    armed = true; $('rec').disabled = false;
+    return say('Microfono pronto: tocca ancora il cerchio per iniziare.', 'ok');
+  }
+  return begin();
+}
+
+async function begin() {
+  try {
     src = ac.createMediaStreamSource(stream);
     proc = ac.createScriptProcessor(4096, 1, 1);
   } catch (e) {
     stream.getTracks().forEach(t => t.stop()); try { ac.close(); } catch (x) {}
-    return say('Il microfono è occupato (chiamata o altra app?). Chiudi le altre app audio e riprova.', 'err');
+    $('rec').disabled = false;
+    return say('Audio non avviato (' + e.message + '). Chiudi le altre app audio e riprova.', 'err');
   }
+  let frames = 0;
+  $('rec').disabled = false;
+  setTimeout(() => { if (recording && frames === 0) say('Il microfono non manda audio (stato: ' + ac.state + '). Tocca per fermare e riprova.', 'err'); }, 3000);
   const ratio = ac.sampleRate / RATE;
   pos = 0; prev = 0;
   buf = new Int16Array(PART_SEC * RATE); idx = 0; partNo = 0;
   recId = new Date().toISOString().replace(/[:.]/g, '-') + '_' + Math.random().toString(36).slice(2, 10);
   proc.onaudioprocess = e => {
     if (!recording) return;
+    frames++;
     const x = e.inputBuffer.getChannelData(0);
     if (ratio === 1) { for (let i = 0; i < x.length; i++) push(x[i]); return; }
     const get = i => (i < 0 ? prev : x[i]);
