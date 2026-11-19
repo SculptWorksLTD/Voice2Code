@@ -40,7 +40,7 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
   <div id="msg"></div>
   <div id="q"></div>
   <button id="retry" class="s" hidden>Invia adesso</button>
-  <small style="color:#555">web app v1.0.3</small>
+  <small style="color:#555">web app v1.0.4</small>
 </main>
 <script>
 const RATE = 16000, PART_SEC = 480, MAX_SEC = 3600;
@@ -57,7 +57,7 @@ if (!KEY) { $('rec').disabled = true; say('Apri Voice2Code sul computer e inquad
 else say('Tocca e parla. La prima volta di\' il tuo nome.');
 
 // ---------- coda locale (IndexedDB) con ripiego in memoria: niente audio perso se manca la rete ----------
-window.addEventListener('error', e => say('Errore: ' + (e.message || e), 'err'));
+window.addEventListener('error', e => { if (!e.filename || !e.filename.startsWith(location.origin) || /^Script error/i.test(e.message || '')) return; say('Errore: ' + e.message, 'err'); });
 window.addEventListener('unhandledrejection', e => say('Errore: ' + ((e.reason && e.reason.message) || e.reason), 'err'));
 const mem = []; let memKey = 0;
 const db = new Promise(res => {
