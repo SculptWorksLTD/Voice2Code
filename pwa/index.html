@@ -39,25 +39,18 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
   <div id="msg"></div>
   <div id="q"></div>
   <button id="retry" class="s" hidden>Invia adesso</button>
-  <small style="color:#555">web app v1.0.5</small>
+  <small style="color:#555">web app v1.0.6</small>
 </main>
 <script>
 const RATE = 16000, PART_SEC = 480, MAX_SEC = 3600;
 const $ = id => document.getElementById(id);
-const qk = new URLSearchParams(location.search).get('k');
-if (qk) localStorage.setItem('v2c_key', qk);
-const KEY = qk || localStorage.getItem('v2c_key') || '';
-if (KEY) {
-  // la chiave resta nell'indirizzo: "Aggiungi a Home" la conserva anche su iPhone
-  if (!qk) history.replaceState(null, '', '/?k=' + encodeURIComponent(KEY));
-  const l = document.createElement('link'); l.rel = 'manifest'; l.href = '/manifest.json?k=' + encodeURIComponent(KEY); document.head.appendChild(l);
-}
+const KEY = 'v2c';
+{ const l = document.createElement('link'); l.rel = 'manifest'; l.href = '/manifest.json'; document.head.appendChild(l); }
 
 const say = (t, c = '') => { $('msg').textContent = t; $('msg').className = c; };
 const fmt = s => String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
 
-if (!KEY) { $('rec').disabled = true; say('Non collegato. Inquadra il QR code nel programma Voice2Code del computer, apri il link in Safari/Chrome e da lì fai "Aggiungi a Home".', 'err'); }
-else say('Tocca e parla. La prima volta di\' il tuo nome.');
+say('Tocca e parla. La prima volta di\' il tuo nome.');
 
 // ---------- coda locale (IndexedDB) con ripiego in memoria: niente audio perso se manca la rete ----------
 window.addEventListener('error', e => { if (!e.filename || !e.filename.startsWith(location.origin) || /^Script error/i.test(e.message || '')) return; say('Errore: ' + e.message, 'err'); });
@@ -101,9 +94,8 @@ async function flush() {
       if (!isRec()) say('Invio… (' + Math.ceil(body.size / 1024) + ' KB)');
       const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 60000 + body.size / 20);
       let r;
-      try { r = await fetch('/upload' + qs, { method: 'POST', headers: { 'X-API-Key': KEY, 'Content-Type': 'audio/wav' }, body, signal: ctl.signal }); }
+      try { r = await fetch('/upload' + qs, { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body, signal: ctl.signal }); }
       finally { clearTimeout(to); }
-      if (r.status === 401) { say('Chiave non valida: inquadra di nuovo il QR code dal computer.', 'err'); break; }
       if (!r.ok) throw new Error('il server ha risposto ' + r.status);
       await qDel(k);
       if (!isRec() && (v instanceof Blob || v.last)) { say('✓ Inviato', 'ok'); if (navigator.vibrate) navigator.vibrate(60); }
