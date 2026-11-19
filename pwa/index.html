@@ -55,35 +55,60 @@ const fmt = s => String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 
 if (!KEY) { $('rec').disabled = true; say('Apri Voice2Code sul computer e inquadra il QR code (o usa "Registra dal computer").', 'err'); }
 else say('Tocca e parla. La prima volta di\' il tuo nome.');
 
-// ---------- coda locale (IndexedDB): niente audio perso se manca la rete ----------
-const db = new Promise((res, rej) => {
-  const r = indexedDB.open('v2c', 1);
-  r.onupgradeneeded = () => r.result.createObjectStore('q', { autoIncrement: true });
-  r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+// ---------- coda locale (IndexedDB) con ripiego in memoria: niente audio perso se manca la rete ----------
+window.addEventListener('error', e => say('Errore: ' + (e.message || e), 'err'));
+window.addEventListener('unhandledrejection', e => say('Errore: ' + ((e.reason && e.reason.message) || e.reason), 'err'));
+const mem = []; let memKey = 0;
+const db = new Promise(res => {
+  try {
+    const r = indexedDB.open('v2c', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('q', { autoIncrement: true });
+    r.onsuccess = () => res(r.result); r.onerror = () => res(null); r.onblocked = () => res(null);
+    setTimeout(() => res(null), 3000);
+  } catch (e) { res(null); }
 });
-const tx = async (mode, fn) => { const d = await db; return new Promise((res, rej) => { const t = d.transaction('q', mode); fn(t.objectStore('q')); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); };
-const qAdd = v => tx('readwrite', s => s.add(v));
-const qDel = k => tx('readwrite', s => s.delete(k));
-const qAll = async () => { const d = await db; return new Promise(res => { const out = []; const c = d.transaction('q').objectStore('q').openCursor(); c.onsuccess = () => { const x = c.result; if (x) { out.push([x.key, x.value]); x.continue(); } else res(out); }; }); };
+const tx = async (mode, fn) => {
+  const d = await db; if (!d) throw new Error('no db');
+  return new Promise((res, rej) => {
+    const t = d.transaction('q', mode); fn(t.objectStore('q'));
+    t.oncomplete = () => res(); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+    setTimeout(() => rej(new Error('db timeout')), 5000);
+  });
+};
+async function qAdd(v) { try { await tx('readwrite', s => s.add(v)); } catch (e) { mem.push(['m' + (memKey++), v]); } }
+async function qDel(k) { const i = mem.findIndex(x => x[0] === k); if (i >= 0) { mem.splice(i, 1); return; } try { await tx('readwrite', s => s.delete(k)); } catch (e) {} }
+async function qAll() {
+  let out = [];
+  try {
+    const d = await db;
+    if (d) out = await new Promise(res => { const o = []; const c = d.transaction('q').objectStore('q').openCursor(); c.onsuccess = () => { const x = c.result; if (x) { o.push([x.key, x.value]); x.continue(); } else res(o); }; c.onerror = () => res(o); setTimeout(() => res(o), 5000); });
+  } catch (e) {}
+  return out.concat(mem);
+}
+const toBody = v => v instanceof Blob ? v : v.data ? new Blob([v.data], { type: 'audio/wav' }) : v.blob;
 
 let flushing = false;
 async function flush() {
   if (flushing || !KEY) return; flushing = true;
   try {
     for (const [k, v] of await qAll()) {
-      const blob = v instanceof Blob ? v : v.blob;
+      const body = toBody(v);
       const qs = v instanceof Blob ? '' : `?id=${encodeURIComponent(v.id)}&part=${v.part}&last=${v.last ? 1 : 0}`;
-      if (!isRec()) say('Invio…');
-      const r = await fetch('/upload' + qs, { method: 'POST', headers: { 'X-API-Key': KEY, 'Content-Type': 'audio/wav' }, body: blob });
+      if (!isRec()) say('Invio… (' + Math.ceil(body.size / 1024) + ' KB)');
+      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 60000 + body.size / 20);
+      let r;
+      try { r = await fetch('/upload' + qs, { method: 'POST', headers: { 'X-API-Key': KEY, 'Content-Type': 'audio/wav' }, body, signal: ctl.signal }); }
+      finally { clearTimeout(to); }
       if (r.status === 401) { say('Chiave non valida: inquadra di nuovo il QR code dal computer.', 'err'); break; }
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (!r.ok) throw new Error('il server ha risposto ' + r.status);
       await qDel(k);
       if (!isRec() && (v instanceof Blob || v.last)) { say('✓ Inviato', 'ok'); if (navigator.vibrate) navigator.vibrate(60); }
     }
-  } catch (e) { if (!isRec()) say('Senza rete: lo invio appena torna la connessione.', 'err'); }
+  } catch (e) { if (!isRec()) say('Non inviato (' + (e.name === 'AbortError' ? 'tempo scaduto' : e.message) + '). Riprovo appena possibile.', 'err'); }
   flushing = false; showQ();
 }
 async function showQ() { const n = (await qAll()).length; $('q').textContent = n ? n + ' pezzi in attesa di invio' : ''; $('retry').hidden = !n || isRec(); }
+setInterval(() => { if (!isRec()) flush(); }, 30000);
 
 // ---------- registrazione: PCM 16 kHz mono, spedito a pezzi da 8 minuti ----------
 let ac = null, src = null, proc = null, stream = null, wake = null;
@@ -102,9 +127,10 @@ function wav(int16) {
 
 async function closePart(last) {
   partNo++;
-  const blob = wav(buf.slice(0, idx));
+  const part = partNo, slice = buf.slice(0, idx);
   buf = new Int16Array(PART_SEC * RATE); idx = 0;
-  await qAdd({ blob, id: recId, part: partNo, last });
+  const data = await wav(slice).arrayBuffer();
+  await qAdd({ data, id: recId, part, last });
   flush();
 }
 
