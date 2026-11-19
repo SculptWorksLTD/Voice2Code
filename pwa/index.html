@@ -14,9 +14,9 @@
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%;background:#111;color:#eee;font:16px -apple-system,system-ui,sans-serif}
-main{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:max(24px,env(safe-area-inset-top)) 20px max(24px,env(safe-area-inset-bottom))}
+main{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;padding:max(24px,env(safe-area-inset-top)) 20px max(24px,env(safe-area-inset-bottom))}
 h1{margin:0;font-size:1.1rem;color:#888;font-weight:600;letter-spacing:1px}
-#rec{width:min(62vw,260px);aspect-ratio:1;border-radius:50%;border:8px solid #333;background:#dc2626;display:flex;align-items:center;justify-content:center;transition:transform .15s,background .2s}
+#rec{width:min(62vw,260px);aspect-ratio:1;border-radius:50%;border:8px solid #333;background:#dc2626;display:flex;align-items:center;justify-content:center;transition:transform .15s,background .2s;cursor:pointer}
 #rec:active{transform:scale(.96)}
 #rec span{width:34%;aspect-ratio:1;border-radius:50%;background:#fff;transition:border-radius .2s}
 #rec.on{background:#7f1d1d;animation:p 1.4s infinite}
@@ -24,10 +24,11 @@ h1{margin:0;font-size:1.1rem;color:#888;font-weight:600;letter-spacing:1px}
 #rec:disabled{opacity:.4}
 @keyframes p{0%{box-shadow:0 0 0 0 #dc262688}100%{box-shadow:0 0 0 34px #dc262600}}
 #timer{font:600 2.2rem ui-monospace,monospace;letter-spacing:2px}
-#msg{min-height:3em;text-align:center;color:#aaa;max-width:320px;line-height:1.4}
+#max{color:#666;font-size:.85rem;margin-top:-14px}
+#msg{min-height:3em;text-align:center;color:#aaa;max-width:340px;line-height:1.4}
 #msg.ok{color:#4ade80}#msg.err{color:#f87171}
 #q{color:#facc15;font-size:.9rem}
-button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22px;font-size:1rem}
+button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22px;font-size:1rem;cursor:pointer}
 </style>
 </head>
 <body>
@@ -35,112 +36,132 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
   <h1>VOICE2CODE</h1>
   <button id="rec" aria-label="Registra"><span></span></button>
   <div id="timer">00:00</div>
+  <div id="max">massimo 60:00</div>
   <div id="msg"></div>
   <div id="q"></div>
   <button id="retry" class="s" hidden>Invia adesso</button>
 </main>
 <script>
+const RATE = 16000, PART_SEC = 480, MAX_SEC = 3600;
 const $ = id => document.getElementById(id);
 const qk = new URLSearchParams(location.search).get('k');
 if (qk) localStorage.setItem('v2c_key', qk);
 const KEY = qk || localStorage.getItem('v2c_key') || '';
 if (KEY) $('mf').href = '/manifest.json?k=' + encodeURIComponent(KEY);
 
-const MIME = ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
-  .find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
-let rec = null, stream = null, chunks = [], t0 = 0, tick = 0;
-
 const say = (t, c = '') => { $('msg').textContent = t; $('msg').className = c; };
 const fmt = s => String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
 
-if (!KEY) { $('rec').disabled = true; say('Apri Voice2Code sul computer e inquadra il QR code con la fotocamera.', 'err'); }
+if (!KEY) { $('rec').disabled = true; say('Apri Voice2Code sul computer e inquadra il QR code (o usa "Registra dal computer").', 'err'); }
 else say('Tocca e parla. La prima volta di\' il tuo nome.');
 
-// ---- coda locale (IndexedDB): niente audio perso se manca la rete ----
+// ---------- coda locale (IndexedDB): niente audio perso se manca la rete ----------
 const db = new Promise((res, rej) => {
   const r = indexedDB.open('v2c', 1);
   r.onupgradeneeded = () => r.result.createObjectStore('q', { autoIncrement: true });
   r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
 });
-const tx = async (mode, fn) => { const d = await db; return new Promise((res, rej) => { const t = d.transaction('q', mode); const s = t.objectStore('q'); const r = fn(s); t.oncomplete = () => res(r && r.result); t.onerror = () => rej(t.error); }); };
-const qAdd = b => tx('readwrite', s => s.add(b));
-const qAll = async () => { const d = await db; return new Promise(res => { const out = []; const c = d.transaction('q').objectStore('q').openCursor(); c.onsuccess = () => { const x = c.result; if (x) { out.push([x.key, x.value]); x.continue(); } else res(out); }; }); };
+const tx = async (mode, fn) => { const d = await db; return new Promise((res, rej) => { const t = d.transaction('q', mode); fn(t.objectStore('q')); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); };
+const qAdd = v => tx('readwrite', s => s.add(v));
 const qDel = k => tx('readwrite', s => s.delete(k));
+const qAll = async () => { const d = await db; return new Promise(res => { const out = []; const c = d.transaction('q').objectStore('q').openCursor(); c.onsuccess = () => { const x = c.result; if (x) { out.push([x.key, x.value]); x.continue(); } else res(out); }; }); };
 
 let flushing = false;
 async function flush() {
   if (flushing || !KEY) return; flushing = true;
   try {
-    const items = await qAll();
-    for (const [k, blob] of items) {
-      say('Invio…');
-      const r = await fetch('/upload', { method: 'POST', headers: { 'X-API-Key': KEY, 'Content-Type': blob.type || 'audio/wav' }, body: blob });
+    for (const [k, v] of await qAll()) {
+      const blob = v instanceof Blob ? v : v.blob;
+      const qs = v instanceof Blob ? '' : `?id=${encodeURIComponent(v.id)}&part=${v.part}&last=${v.last ? 1 : 0}`;
+      if (!isRec()) say('Invio…');
+      const r = await fetch('/upload' + qs, { method: 'POST', headers: { 'X-API-Key': KEY, 'Content-Type': 'audio/wav' }, body: blob });
       if (r.status === 401) { say('Chiave non valida: inquadra di nuovo il QR code dal computer.', 'err'); break; }
       if (!r.ok) throw new Error('HTTP ' + r.status);
       await qDel(k);
-      say('✓ Inviato', 'ok'); if (navigator.vibrate) navigator.vibrate(60);
+      if (!isRec() && (v instanceof Blob || v.last)) { say('✓ Inviato', 'ok'); if (navigator.vibrate) navigator.vibrate(60); }
     }
-  } catch (e) { say('Senza rete: lo invio appena torna la connessione.', 'err'); }
+  } catch (e) { if (!isRec()) say('Senza rete: lo invio appena torna la connessione.', 'err'); }
   flushing = false; showQ();
 }
-async function showQ() { const n = (await qAll()).length; $('q').textContent = n ? n + ' in attesa di invio' : ''; $('retry').hidden = !n; }
+async function showQ() { const n = (await qAll()).length; $('q').textContent = n ? n + ' pezzi in attesa di invio' : ''; $('retry').hidden = !n || isRec(); }
 
-$('rec').onclick = () => (rec && rec.state === 'recording') ? stop() : start();
+// ---------- registrazione: PCM 16 kHz mono, spedito a pezzi da 8 minuti ----------
+let ac = null, src = null, proc = null, stream = null, wake = null;
+let recording = false, t0 = 0, tick = 0, recId = '', partNo = 0, buf = null, idx = 0, pos = 0, prev = 0;
+const isRec = () => recording;
+
+function wav(int16) {
+  const v = new DataView(new ArrayBuffer(44));
+  const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  w(0, 'RIFF'); v.setUint32(4, 36 + int16.length * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, RATE, true); v.setUint32(28, RATE * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, 'data'); v.setUint32(40, int16.length * 2, true);
+  return new Blob([v.buffer, int16], { type: 'audio/wav' });
+}
+
+async function closePart(last) {
+  partNo++;
+  const blob = wav(buf.slice(0, idx));
+  buf = new Int16Array(PART_SEC * RATE); idx = 0;
+  await qAdd({ blob, id: recId, part: partNo, last });
+  flush();
+}
+
+function push(s) {
+  s = Math.max(-1, Math.min(1, s));
+  buf[idx++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  if (idx >= buf.length) closePart(false);
+}
+
+$('rec').onclick = () => recording ? stop() : start();
 $('retry').onclick = flush;
 window.addEventListener('online', flush);
 document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && flush());
 
 async function start() {
-  if (!window.MediaRecorder) return say('Questo browser non può registrare.', 'err');
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } }); }
-  catch (e) { return say('Microfono non permesso. Abilitalo nelle impostazioni del telefono.', 'err'); }
-  chunks = [];
-  rec = new MediaRecorder(stream, MIME ? { mimeType: MIME } : undefined);
-  rec.ondataavailable = e => e.data && e.data.size && chunks.push(e.data);
-  rec.onstop = finish;
-  rec.start(1000);
-  t0 = Date.now(); $('timer').textContent = '00:00';
-  tick = setInterval(() => $('timer').textContent = fmt(Math.floor((Date.now() - t0) / 1000)), 250);
-  $('rec').classList.add('on');
-  say('Registro… tocca di nuovo per finire.');
-}
-
-function stop() { clearInterval(tick); $('rec').classList.remove('on'); rec.stop(); }
-
-async function finish() {
-  stream.getTracks().forEach(t => t.stop());
-  const blob = new Blob(chunks, { type: (rec.mimeType || MIME || 'audio/mp4').split(';')[0] });
-  if (!blob.size) return say('Registrazione vuota.', 'err');
-  $('rec').disabled = true; say('Preparo l\'audio…');
-  let out = blob; try { out = await toWav(blob); } catch (e) {}
-  await qAdd(out);
-  $('rec').disabled = false;
-  flush();
-}
-
-async function toWav(blob) {
+  catch (e) { return say('Microfono non permesso. Abilitalo nelle impostazioni.', 'err'); }
   const AC = window.AudioContext || window.webkitAudioContext;
-  const ac = new AC();
-  try {
-    const ab = await blob.arrayBuffer();
-    const buf = await new Promise((res, rej) => ac.decodeAudioData(ab, res, rej));
-    const n = buf.length, ch = buf.numberOfChannels, mono = new Float32Array(n);
-    for (let c = 0; c < ch; c++) { const d = buf.getChannelData(c); for (let i = 0; i < n; i++) mono[i] += d[i] / ch; }
-    const ratio = buf.sampleRate / 16000, len = Math.floor(n / ratio), out = new Int16Array(len);
-    for (let i = 0; i < len; i++) {
-      const p = i * ratio, j = Math.floor(p), f = p - j, a = mono[j], b = j + 1 < n ? mono[j + 1] : a;
-      const s = Math.max(-1, Math.min(1, a + (b - a) * f));
-      out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-    }
-    const v = new DataView(new ArrayBuffer(44 + out.length * 2));
-    const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
-    w(0, 'RIFF'); v.setUint32(4, 36 + out.length * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
-    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-    v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-    w(36, 'data'); v.setUint32(40, out.length * 2, true);
-    new Int16Array(v.buffer, 44).set(out);
-    return new Blob([v.buffer], { type: 'audio/wav' });
-  } finally { ac.close && ac.close(); }
+  try { ac = new AC({ sampleRate: RATE }); } catch (e) { ac = new AC(); }
+  await ac.resume();
+  src = ac.createMediaStreamSource(stream);
+  proc = ac.createScriptProcessor(4096, 1, 1);
+  const ratio = ac.sampleRate / RATE;
+  pos = 0; prev = 0;
+  buf = new Int16Array(PART_SEC * RATE); idx = 0; partNo = 0;
+  recId = new Date().toISOString().replace(/[:.]/g, '-') + '_' + Math.random().toString(36).slice(2, 10);
+  proc.onaudioprocess = e => {
+    if (!recording) return;
+    const x = e.inputBuffer.getChannelData(0);
+    if (ratio === 1) { for (let i = 0; i < x.length; i++) push(x[i]); return; }
+    const get = i => (i < 0 ? prev : x[i]);
+    while (pos < x.length - 1) { const j = Math.floor(pos), f = pos - j, a = get(j); push(a + (get(j + 1) - a) * f); pos += ratio; }
+    pos -= x.length; prev = x[x.length - 1];
+  };
+  src.connect(proc); proc.connect(ac.destination);
+  recording = true; t0 = Date.now(); $('timer').textContent = '00:00';
+  tick = setInterval(() => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    $('timer').textContent = fmt(s);
+    if (s >= MAX_SEC) { stop(); say('Raggiunto il limite di 60 minuti: registrazione inviata.', 'ok'); }
+  }, 250);
+  try { wake = await navigator.wakeLock.request('screen'); } catch (e) {}
+  $('rec').classList.add('on'); $('retry').hidden = true;
+  say('Registro… tieni lo schermo acceso. Tocca di nuovo per finire.');
+}
+
+async function stop() {
+  if (!recording) return;
+  recording = false; clearInterval(tick);
+  $('rec').classList.remove('on');
+  try { proc.disconnect(); src.disconnect(); } catch (e) {}
+  stream.getTracks().forEach(t => t.stop());
+  try { await ac.close(); } catch (e) {}
+  try { wake && wake.release(); } catch (e) {}
+  if (partNo === 0 && idx < RATE / 2) { say('Registrazione troppo corta.', 'err'); return; }
+  say('Invio…');
+  await closePart(true);
 }
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
