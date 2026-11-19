@@ -45,10 +45,10 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
   <div id="q"></div>
   <button id="retry" class="s" hidden>Invia adesso</button>
   <section id="notes"></section>
-  <small style="color:#555">web app v1.0.10</small>
+  <small style="color:#555">web app v1.0.11</small>
 </main>
 <script>
-const RATE = 16000, PART_SEC = 480, MAX_SEC = 3600;
+const RATE = 16000, PART_SEC = 240, MAX_SEC = 3600;
 const $ = id => document.getElementById(id);
 const KEY = 'v2c';
 { const l = document.createElement('link'); l.rel = 'manifest'; l.href = '/manifest.json'; document.head.appendChild(l); }
@@ -88,7 +88,7 @@ async function qAll() {
   } catch (e) {}
   return out.concat(mem);
 }
-const toBody = v => v instanceof Blob ? v : v.data ? new Blob([v.data], { type: 'audio/wav' }) : v.blob;
+const toBody = v => v instanceof Blob ? v : v.data ? new Blob([v.data], { type: v.type || 'audio/wav' }) : v.blob;
 
 let flushing = false;
 async function flush() {
@@ -97,10 +97,11 @@ async function flush() {
     for (const [k, v] of await qAll()) {
       const body = toBody(v);
       const qs = v instanceof Blob ? '' : `?id=${encodeURIComponent(v.id)}&part=${v.part}&last=${v.last ? 1 : 0}`;
+      const ctype = (v && v.type) || body.type || 'audio/wav';
       if (!isRec()) say('Invio… (' + Math.ceil(body.size / 1024) + ' KB)');
       const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 60000 + body.size / 20);
       let r;
-      try { r = await fetch('/upload' + qs, { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body, signal: ctl.signal }); }
+      try { r = await fetch('/upload' + qs, { method: 'POST', headers: { 'Content-Type': ctype }, body, signal: ctl.signal }); }
       finally { clearTimeout(to); }
       if (!r.ok) throw new Error('il server ha risposto ' + r.status);
       await qDel(k);
@@ -112,9 +113,10 @@ async function flush() {
 async function showQ() { const n = (await qAll()).length; $('q').textContent = n ? n + ' pezzi in attesa di invio' : ''; $('retry').hidden = !n || isRec(); }
 setInterval(() => { if (!isRec()) flush(); }, 30000);
 
-// ---------- registrazione: PCM 16 kHz mono, spedito a pezzi da 8 minuti ----------
-let ac = null, src = null, proc = null, stream = null, wake = null;
-let recording = false, t0 = 0, tick = 0, recId = '', partNo = 0, buf = null, idx = 0, pos = 0, prev = 0;
+// ---------- registrazione: registratore di Safari/Chrome, a pezzi da 4 minuti, convertiti in WAV 16 kHz ----------
+const MIME = ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
+  .find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || '';
+let stream = null, wake = null, mr = null, recording = false, t0 = 0, tick = 0, recId = '', partNo = 0, partStart = 0, conv = Promise.resolve();
 const isRec = () => recording;
 
 function wav(int16) {
@@ -127,109 +129,82 @@ function wav(int16) {
   return new Blob([v.buffer, int16], { type: 'audio/wav' });
 }
 
-async function closePart(last) {
-  if (last) remember(recId);
+async function toWav16(blob) {
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const ctx = new OAC(1, 1, 44100);
+  const ab = await blob.arrayBuffer();
+  const buf = await new Promise((res, rej) => { const p = ctx.decodeAudioData(ab, res, rej); if (p && p.then) p.then(res, rej); });
+  const n = buf.length, ch = buf.numberOfChannels, ratio = buf.sampleRate / RATE, len = Math.floor(n / ratio);
+  const chans = []; for (let c = 0; c < ch; c++) chans.push(buf.getChannelData(c));
+  const at = i => { let s = 0; for (let c = 0; c < ch; c++) s += chans[c][i]; return s / ch; };
+  const out = new Int16Array(len);
+  for (let i = 0; i < len; i++) {
+    const p = i * ratio, j = Math.floor(p), f = p - j, a = at(j), b = j + 1 < n ? at(j + 1) : a;
+    const s = Math.max(-1, Math.min(1, a + (b - a) * f));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return wav(out);
+}
+
+function handlePart(blob, last) {
   partNo++;
-  const part = partNo, slice = buf.slice(0, idx);
-  buf = new Int16Array(PART_SEC * RATE); idx = 0;
-  const data = await wav(slice).arrayBuffer();
-  await qAdd({ data, id: recId, part, last });
-  flush();
+  const part = partNo, id = recId;
+  if (last) remember(id);
+  conv = conv.then(async () => {
+    let out = blob;
+    try { out = await toWav16(blob); } catch (e) {}
+    await qAdd({ data: await out.arrayBuffer(), type: out.type || 'audio/mp4', id, part, last });
+    flush();
+  }).catch(e => say('Errore pezzo ' + part + ': ' + e.message, 'err'));
 }
 
-function push(s) {
-  s = Math.max(-1, Math.min(1, s));
-  buf[idx++] = s < 0 ? s * 0x8000 : s * 0x7fff;
-  if (idx >= buf.length) closePart(false);
+function newRecorder() {
+  const chunks = [];
+  const r = new MediaRecorder(stream, MIME ? { mimeType: MIME } : undefined);
+  r.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  r.onstop = () => {
+    const blob = new Blob(chunks, { type: (r.mimeType || MIME || 'audio/mp4').split(';')[0] });
+    const last = !recording;
+    if (blob.size) handlePart(blob, last);
+    if (recording) newRecorder();
+    else { stream.getTracks().forEach(t => t.stop()); say('Invio…'); }
+  };
+  r.start(1000);
+  mr = r; partStart = Date.now();
 }
 
-let armed = false;
-$('rec').onclick = () => {
-  const fail = e => say('Non riesco ad avviare la registrazione: ' + e.message, 'err');
-  if (recording) return stop();
-  if (armed) { armed = false; try { ac.resume(); } catch (e) {} return begin().catch(fail); }
-  start().catch(fail);
-};
+$('rec').onclick = () => (recording ? stop() : start().catch(e => say('Non riesco ad avviare la registrazione: ' + e.message, 'err')));
 $('retry').onclick = flush;
 window.addEventListener('online', flush);
 document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && flush());
 
 async function start() {
-  // iPhone: prima il microfono, poi l'audio (alla frequenza del telefono), senza mai restare in attesa
-  const AC = window.AudioContext || window.webkitAudioContext;
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  $('rec').disabled = true;
+  if (!window.MediaRecorder) return say('Questo browser non può registrare: aggiorna iOS o usa Chrome.', 'err');
   say('Accendo il microfono…');
-  try {
-    stream = await Promise.race([
-      navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }),
-      sleep(15000).then(() => { throw new Error('nessuna risposta dal microfono'); }),
-    ]);
-  } catch (e) {
-    $('rec').disabled = false;
-    return say('Microfono non disponibile (' + e.message + '). Controlla Impostazioni › Safari › Microfono › Consenti.', 'err');
-  }
-  try { if (ac && ac.state !== 'closed') ac.close(); } catch (e) {}
-  try {
-    ac = new AC();
-    for (let i = 0; i < 3 && ac.state !== 'running'; i++) await Promise.race([ac.resume().catch(() => {}), sleep(800)]);
-  } catch (e) {}
-  if (!ac || ac.state !== 'running') {
-    // Safari vuole un secondo tocco per accendere l'audio
-    armed = true; $('rec').disabled = false;
-    return say('Microfono pronto: tocca ancora il cerchio per iniziare.', 'ok');
-  }
-  return begin();
-}
-
-async function begin() {
-  try {
-    src = ac.createMediaStreamSource(stream);
-    proc = ac.createScriptProcessor(4096, 1, 1);
-  } catch (e) {
-    stream.getTracks().forEach(t => t.stop()); try { ac.close(); } catch (x) {}
-    $('rec').disabled = false;
-    return say('Audio non avviato (' + e.message + '). Chiudi le altre app audio e riprova.', 'err');
-  }
-  let frames = 0;
-  $('rec').disabled = false;
-  setTimeout(() => { if (recording && frames === 0) say('Il microfono non manda audio (stato: ' + ac.state + '). Tocca per fermare e riprova.', 'err'); }, 3000);
-  const ratio = ac.sampleRate / RATE;
-  pos = 0; prev = 0;
-  buf = new Int16Array(PART_SEC * RATE); idx = 0; partNo = 0;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+  catch (e) { return say('Microfono non permesso (' + e.message + '). Impostazioni › Safari › Microfono › Consenti.', 'err'); }
   recId = new Date().toISOString().replace(/[:.]/g, '-') + '_' + Math.random().toString(36).slice(2, 10);
-  proc.onaudioprocess = e => {
-    if (!recording) return;
-    frames++;
-    const x = e.inputBuffer.getChannelData(0);
-    if (ratio === 1) { for (let i = 0; i < x.length; i++) push(x[i]); return; }
-    const get = i => (i < 0 ? prev : x[i]);
-    while (pos < x.length - 1) { const j = Math.floor(pos), f = pos - j, a = get(j); push(a + (get(j + 1) - a) * f); pos += ratio; }
-    pos -= x.length; prev = x[x.length - 1];
-  };
-  src.connect(proc); proc.connect(ac.destination);
-  recording = true; t0 = Date.now(); $('timer').textContent = '00:00';
+  partNo = 0; recording = true;
+  newRecorder();
+  t0 = Date.now(); $('timer').textContent = '00:00';
   tick = setInterval(() => {
     const s = Math.floor((Date.now() - t0) / 1000);
     $('timer').textContent = fmt(s);
-    if (s >= MAX_SEC) { stop(); say('Raggiunto il limite di 60 minuti: registrazione inviata.', 'ok'); }
+    if (s >= MAX_SEC) { stop(); say('Raggiunto il limite di 60 minuti: registrazione inviata.', 'ok'); return; }
+    if (Date.now() - partStart >= PART_SEC * 1000 && mr && mr.state === 'recording') mr.stop();
   }, 250);
   try { wake = await navigator.wakeLock.request('screen'); } catch (e) {}
   $('rec').classList.add('on'); $('retry').hidden = true;
   say('Registro… tieni lo schermo acceso. Tocca di nuovo per finire.');
 }
 
-async function stop() {
+function stop() {
   if (!recording) return;
   recording = false; clearInterval(tick);
   $('rec').classList.remove('on');
-  try { proc.disconnect(); src.disconnect(); } catch (e) {}
-  stream.getTracks().forEach(t => t.stop());
-  try { await ac.close(); } catch (e) {}
   try { wake && wake.release(); } catch (e) {}
-  if (partNo === 0 && idx < RATE / 2) { say('Registrazione troppo corta.', 'err'); return; }
-  say('Invio…');
-  await closePart(true);
+  if (Date.now() - t0 < 1000) say('Registrazione troppo corta.', 'err');
+  if (mr && mr.state !== 'inactive') mr.stop();
 }
 
 // ---------- le mie note: prompt pronti da scaricare ----------
