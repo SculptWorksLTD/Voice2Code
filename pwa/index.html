@@ -9,7 +9,6 @@
 <meta name="apple-mobile-web-app-title" content="Voice2Code">
 <meta name="theme-color" content="#111111">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<link id="mf" rel="manifest" href="/manifest.json">
 <title>Voice2Code</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -40,7 +39,7 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
   <div id="msg"></div>
   <div id="q"></div>
   <button id="retry" class="s" hidden>Invia adesso</button>
-  <small style="color:#555">web app v1.0.4</small>
+  <small style="color:#555">web app v1.0.5</small>
 </main>
 <script>
 const RATE = 16000, PART_SEC = 480, MAX_SEC = 3600;
@@ -48,12 +47,16 @@ const $ = id => document.getElementById(id);
 const qk = new URLSearchParams(location.search).get('k');
 if (qk) localStorage.setItem('v2c_key', qk);
 const KEY = qk || localStorage.getItem('v2c_key') || '';
-if (KEY) $('mf').href = '/manifest.json?k=' + encodeURIComponent(KEY);
+if (KEY) {
+  // la chiave resta nell'indirizzo: "Aggiungi a Home" la conserva anche su iPhone
+  if (!qk) history.replaceState(null, '', '/?k=' + encodeURIComponent(KEY));
+  const l = document.createElement('link'); l.rel = 'manifest'; l.href = '/manifest.json?k=' + encodeURIComponent(KEY); document.head.appendChild(l);
+}
 
 const say = (t, c = '') => { $('msg').textContent = t; $('msg').className = c; };
 const fmt = s => String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
 
-if (!KEY) { $('rec').disabled = true; say('Apri Voice2Code sul computer e inquadra il QR code (o usa "Registra dal computer").', 'err'); }
+if (!KEY) { $('rec').disabled = true; say('Non collegato. Inquadra il QR code nel programma Voice2Code del computer, apri il link in Safari/Chrome e da lì fai "Aggiungi a Home".', 'err'); }
 else say('Tocca e parla. La prima volta di\' il tuo nome.');
 
 // ---------- coda locale (IndexedDB) con ripiego in memoria: niente audio perso se manca la rete ----------
