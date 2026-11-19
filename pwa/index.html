@@ -45,7 +45,7 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
   <div id="q"></div>
   <button id="retry" class="s" hidden>Invia adesso</button>
   <section id="notes"></section>
-  <small style="color:#555">web app v1.0.7</small>
+  <small style="color:#555">web app v1.0.8</small>
 </main>
 <script>
 const RATE = 16000, PART_SEC = 480, MAX_SEC = 3600;
@@ -212,7 +212,7 @@ async function loadNotes() {
     row.querySelector('small').textContent = when + (d ? ' · ' + d.user : '');
     if (d) {
       const dl = document.createElement('button'); dl.textContent = 'Scarica'; dl.onclick = () => saveFile(d);
-      const cp = document.createElement('button'); cp.textContent = 'Copia'; cp.onclick = async () => { try { await navigator.clipboard.writeText(d.md.split('\n\n---\n\n')[0]); say('Prompt copiato', 'ok'); } catch (e) { say('Copia non riuscita', 'err'); } };
+      const cp = document.createElement('button'); cp.textContent = 'Copia'; cp.onclick = async () => { try { await navigator.clipboard.writeText(d.md); say('Prompt copiato', 'ok'); } catch (e) { say('Copia non riuscita', 'err'); } };
       row.append(dl, cp);
     }
     box.appendChild(row);
