@@ -33,6 +33,10 @@ h1{margin:0;font-size:1.1rem;color:#888;font-weight:600;letter-spacing:1px}
 .n div{flex:1;min-width:0}.n b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.95rem}
 .n small{color:#888}.n button{background:#333;color:#eee;border:0;border-radius:8px;padding:8px 10px;font-size:.85rem}
 button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22px;font-size:1rem;cursor:pointer}
+#view{position:fixed;inset:0;background:#111;display:none;flex-direction:column;z-index:9;padding:max(14px,env(safe-area-inset-top)) 14px max(14px,env(safe-area-inset-bottom))}
+#view.on{display:flex}
+#view pre{flex:1;overflow:auto;white-space:pre-wrap;word-wrap:break-word;font:14px/1.45 -apple-system,system-ui,sans-serif;color:#eee;margin:0 0 12px;-webkit-user-select:text;user-select:text}
+#view .bar{display:flex;gap:8px}#view .bar button{flex:1;background:#333;color:#eee;border:0;border-radius:10px;padding:12px;font-size:1rem}
 </style>
 </head>
 <body>
@@ -45,7 +49,8 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
   <div id="q"></div>
   <button id="retry" class="s" hidden>Invia adesso</button>
   <section id="notes"></section>
-  <small style="color:#555">web app v1.0.11</small>
+  <div id="view"><pre id="vtext"></pre><div class="bar"><button id="vcopy">Copia</button><button id="vsave">Scarica</button><button id="vclose">Chiudi</button></div></div>
+  <small style="color:#555">web app v1.0.12</small>
 </main>
 <script>
 const RATE = 16000, PART_SEC = 240, MAX_SEC = 3600;
@@ -225,15 +230,23 @@ async function loadNotes() {
     row.querySelector('b').textContent = d ? d.name.replace(/\.md$/, '').replace(/^\d{4}-\d\d-\d\d_\d\d-\d\d_/, '') : 'In elaborazione sul computer…';
     row.querySelector('small').textContent = when + (d ? ' · ' + d.user : '');
     if (d) {
-      const dl = document.createElement('button'); dl.textContent = 'Scarica'; dl.onclick = () => saveFile(d);
-      const cp = document.createElement('button'); cp.textContent = 'Copia'; cp.onclick = async () => { try { await navigator.clipboard.writeText(d.md); say('Prompt copiato', 'ok'); } catch (e) { say('Copia non riuscita', 'err'); } };
-      row.append(dl, cp);
+      const op = document.createElement('button'); op.textContent = 'Apri'; op.onclick = () => openNote(d);
+      const cp = document.createElement('button'); cp.textContent = 'Copia'; cp.onclick = () => copyNote(d);
+      row.querySelector('div').onclick = () => openNote(d);
+      row.append(op, cp);
     }
     box.appendChild(row);
   }
 }
+const fixMd = md => (md.includes('\\n') ? md.replace(/\\n/g, '\n').replace(/\\"/g, '"') : md);
+async function copyNote(d) { try { await navigator.clipboard.writeText(fixMd(d.md)); say('Prompt copiato', 'ok'); } catch (e) { say('Copia non riuscita: tieni premuto sul testo per copiarlo', 'err'); } }
+let viewing = null;
+function openNote(d) { viewing = d; $('vtext').textContent = fixMd(d.md); $('view').classList.add('on'); }
+$('vclose').onclick = () => $('view').classList.remove('on');
+$('vcopy').onclick = () => viewing && copyNote(viewing);
+$('vsave').onclick = () => viewing && saveFile(viewing);
 async function saveFile(d) {
-  const file = new File([d.md], d.name, { type: 'text/markdown' });
+  const file = new File([fixMd(d.md)], d.name, { type: 'text/plain' });
   if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: d.name }); return; } catch (e) { if (e.name === 'AbortError') return; } }
   const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = d.name; document.body.appendChild(a); a.click(); a.remove();
 }
