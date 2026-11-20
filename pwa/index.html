@@ -3,9 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Voice2Code">
 <meta name="theme-color" content="#111111">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -48,15 +45,17 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
   <div id="msg"></div>
   <div id="q"></div>
   <button id="retry" class="s" hidden>Invia adesso</button>
+  <div id="oldicon" hidden style="max-width:360px;text-align:center;color:#facc15;font-size:.9rem;line-height:1.4">Per registrare anche in background: elimina questa icona dalla Home, apri <b>voice2code.nerosdmf.workers.dev</b> in Safari e fai Condividi › Aggiungi a Home.</div>
   <section id="notes"></section>
   <div id="view"><pre id="vtext"></pre><div class="bar"><button id="vcopy">Copia</button><button id="vsave">Scarica</button><button id="vclose">Chiudi</button></div></div>
-  <small style="color:#555">web app v1.0.13</small>
+  <small style="color:#555">web app v1.0.14</small>
 </main>
 <script>
 const RATE = 16000, PART_SEC = 240, MAX_SEC = 3600;
 const $ = id => document.getElementById(id);
 const KEY = 'v2c';
-{ const l = document.createElement('link'); l.rel = 'manifest'; l.href = '/manifest.json'; document.head.appendChild(l); }
+// niente modalità "app a sé": l'icona sulla Home apre Safari, che continua a registrare in background e a schermo bloccato
+const STANDALONE = window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
 
 const say = (t, c = '') => { $('msg').textContent = t; $('msg').className = c; };
 const fmt = s => String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
@@ -208,7 +207,9 @@ async function start() {
   }, 250);
   try { wake = await navigator.wakeLock.request('screen'); } catch (e) {}
   $('rec').classList.add('on'); $('retry').hidden = true;
-  say('Registro… tieni lo schermo acceso. Tocca di nuovo per finire.');
+  say(STANDALONE
+    ? 'Registro… ATTENZIONE: aperta dall\'icona vecchia, se cambi app si ferma. Rifai l\'icona da Safari (vedi sotto).'
+    : 'Registro… puoi cambiare app o bloccare lo schermo. Tocca di nuovo per finire.', STANDALONE ? 'err' : '');
 }
 
 function stop() {
@@ -261,6 +262,7 @@ async function saveFile(d) {
 setInterval(() => { if (document.visibilityState === 'visible') loadNotes(); }, 20000);
 loadNotes();
 
+if (STANDALONE) $('oldicon').hidden = false;
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
 showQ(); flush();
 </script>
