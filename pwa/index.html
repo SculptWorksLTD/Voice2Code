@@ -50,7 +50,7 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
   <button id="retry" class="s" hidden>Invia adesso</button>
   <section id="notes"></section>
   <div id="view"><pre id="vtext"></pre><div class="bar"><button id="vcopy">Copia</button><button id="vsave">Scarica</button><button id="vclose">Chiudi</button></div></div>
-  <small style="color:#555">web app v1.0.12</small>
+  <small style="color:#555">web app v1.0.13</small>
 </main>
 <script>
 const RATE = 16000, PART_SEC = 240, MAX_SEC = 3600;
@@ -172,7 +172,7 @@ function newRecorder() {
     const last = !recording;
     if (blob.size) handlePart(blob, last);
     if (recording) newRecorder();
-    else { stream.getTracks().forEach(t => t.stop()); say('Invio…'); }
+    else say('Invio…');
   };
   r.start(1000);
   mr = r; partStart = Date.now();
@@ -181,13 +181,21 @@ function newRecorder() {
 $('rec').onclick = () => (recording ? stop() : start().catch(e => say('Non riesco ad avviare la registrazione: ' + e.message, 'err')));
 $('retry').onclick = flush;
 window.addEventListener('online', flush);
-document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && flush());
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') return flush();
+  // web app in secondo piano e nessuna registrazione: libero il microfono
+  if (!recording && stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+});
 
 async function start() {
   if (!window.MediaRecorder) return say('Questo browser non può registrare: aggiorna iOS o usa Chrome.', 'err');
   say('Accendo il microfono…');
-  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
-  catch (e) { return say('Microfono non permesso (' + e.message + '). Impostazioni › Safari › Microfono › Consenti.', 'err'); }
+  // il microfono resta aperto finché la web app è in primo piano: iPhone chiede il permesso una volta sola
+  const live = stream && stream.getAudioTracks().some(t => t.readyState === 'live');
+  if (!live) {
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+    catch (e) { return say('Microfono non permesso (' + e.message + '). Impostazioni › App › Safari › Microfono › Consenti.', 'err'); }
+  }
   recId = new Date().toISOString().replace(/[:.]/g, '-') + '_' + Math.random().toString(36).slice(2, 10);
   partNo = 0; recording = true;
   newRecorder();
