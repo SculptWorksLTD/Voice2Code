@@ -49,12 +49,17 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
   <div id="oldicon" hidden style="max-width:360px;text-align:center;color:#facc15;font-size:.9rem;line-height:1.4">Per registrare anche in background: elimina questa icona dalla Home, apri <b>voice2code.nerosdmf.workers.dev</b> in Safari e fai Condividi › Aggiungi a Home.</div>
   <section id="notes"></section>
   <div id="view"><pre id="vtext"></pre><div class="bar"><button id="vcopy">Copia</button><button id="vsave">Scarica</button><button id="vclose">Chiudi</button></div></div>
-  <small style="color:#555">web app v1.0.15</small>
+  <small style="color:#555">web app v1.0.16</small>
 </main>
 <script>
 const RATE = 16000, PART_SEC = 240, MAX_SEC = 3600;
 const $ = id => document.getElementById(id);
 const KEY = 'v2c';
+const qs0 = new URLSearchParams(location.search).get('s');
+if (qs0) localStorage.setItem('v2c_sync', qs0);
+const SYNC = qs0 || localStorage.getItem('v2c_sync') || '';
+// la chiave di lettura resta nell'indirizzo: "Aggiungi a Home" la conserva
+if (SYNC && !qs0) history.replaceState(null, '', '/?s=' + encodeURIComponent(SYNC));
 // niente modalità "app a sé": l'icona sulla Home apre Safari, che continua a registrare in background e a schermo bloccato
 const STANDALONE = window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
 
@@ -258,22 +263,34 @@ function myNotes() { try { return JSON.parse(localStorage.getItem('v2c_notes') |
 function remember(id) { const l = myNotes().filter(x => x.id !== id); l.unshift({ id, t: Date.now() }); localStorage.setItem('v2c_notes', JSON.stringify(l.slice(0, 30))); }
 const cache = {};
 async function loadNotes() {
-  const box = $('notes'), list = myNotes();
-  if (!list.length) { box.innerHTML = ''; return; }
-  for (const n of list) if (!cache[n.id]) {
-    try { const r = await fetch('/result/' + encodeURIComponent(n.id), { cache: 'no-store' }); if (r.ok) cache[n.id] = await r.json(); } catch (e) {}
+  const box = $('notes'), mine = myNotes();
+  let all = null;
+  if (SYNC) { try { const r = await fetch('/results?r=' + encodeURIComponent(SYNC), { cache: 'no-store' }); if (r.ok) all = await r.json(); } catch (e) {} }
+  // le mie note ancora in elaborazione + tutte quelle pronte (se sincronizzato) o solo le mie
+  const rows = [];
+  const ready = new Set();
+  if (all) for (const x of all) if (x.name) { ready.add(x.id); rows.push({ id: x.id, name: x.name, user: x.user }); }
+  for (const n of mine) if (!ready.has(n.id)) {
+    if (!cache[n.id]) { try { const r = await fetch('/result/' + encodeURIComponent(n.id), { cache: 'no-store' }); if (r.ok) cache[n.id] = await r.json(); } catch (e) {} }
+    const d = cache[n.id];
+    if (all && d) continue; // pronta ma cancellata dal computer
+    rows.push(d ? { id: n.id, name: d.name, user: d.user } : { id: n.id, pending: true, t: n.t });
   }
-  box.innerHTML = '<h2>LE MIE NOTE</h2>';
-  for (const n of list) {
-    const d = cache[n.id], row = document.createElement('div'); row.className = 'n';
-    const when = new Date(n.t).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  rows.sort((a, b) => (a.id < b.id ? 1 : -1));
+  if (!rows.length) { box.innerHTML = SYNC ? '' : '<div style="color:#666;font-size:.85rem;text-align:center">Per vedere qui tutte le note: apri una volta il link del QR nel programma Voice2Code.</div>'; return; }
+  box.innerHTML = '<h2>' + (all ? 'TUTTE LE NOTE' : 'LE MIE NOTE') + '</h2>';
+  for (const n of rows.slice(0, 60)) {
+    const row = document.createElement('div'); row.className = 'n';
     row.innerHTML = '<div><b></b><small></small></div>';
-    row.querySelector('b').textContent = d ? d.name.replace(/\.md$/, '').replace(/^\d{4}-\d\d-\d\d_\d\d-\d\d_/, '') : 'In elaborazione sul computer…';
-    row.querySelector('small').textContent = when + (d ? ' · ' + d.user : '');
-    if (d) {
-      const op = document.createElement('button'); op.textContent = 'Apri'; op.onclick = () => openNote(d);
-      const cp = document.createElement('button'); cp.textContent = 'Copia'; cp.onclick = () => copyNote(d);
-      row.querySelector('div').onclick = () => openNote(d);
+    const m = /^(\d{4})-(\d\d)-(\d\d)T(\d\d)-(\d\d)/.exec(n.id);
+    const when = m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5])).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+    row.querySelector('b').textContent = n.pending ? 'In elaborazione sul computer…' : n.name.replace(/\.md$/, '').replace(/^\d{4}-\d\d-\d\d_\d\d-\d\d_/, '');
+    row.querySelector('small').textContent = when + (n.user ? ' · ' + n.user : '');
+    if (!n.pending) {
+      const get = async () => { if (!cache[n.id]) { const r = await fetch('/result/' + encodeURIComponent(n.id), { cache: 'no-store' }); if (r.ok) cache[n.id] = await r.json(); } return cache[n.id]; };
+      const op = document.createElement('button'); op.textContent = 'Apri'; op.onclick = async () => { const d = await get(); if (d) openNote(d); };
+      const cp = document.createElement('button'); cp.textContent = 'Copia'; cp.onclick = async () => { const d = await get(); if (d) copyNote(d); };
+      row.querySelector('div').onclick = op.onclick;
       row.append(op, cp);
     }
     box.appendChild(row);
@@ -291,7 +308,8 @@ async function saveFile(d) {
   if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: d.name }); return; } catch (e) { if (e.name === 'AbortError') return; } }
   const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = d.name; document.body.appendChild(a); a.click(); a.remove();
 }
-setInterval(() => { if (document.visibilityState === 'visible') loadNotes(); }, 20000);
+setInterval(() => { if (document.visibilityState === 'visible') loadNotes(); }, 60000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') loadNotes(); });
 loadNotes();
 
 if (STANDALONE) $('oldicon').hidden = false;
