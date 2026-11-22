@@ -40,6 +40,7 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
 <main>
   <h1>VOICE2CODE</h1>
   <button id="rec" aria-label="Registra"><span></span></button>
+  <canvas id="wave" width="260" height="44" style="width:260px;height:44px;visibility:hidden"></canvas>
   <div id="timer">00:00</div>
   <div id="max">massimo 60:00</div>
   <div id="msg"></div>
@@ -48,7 +49,7 @@ button.s{background:#333;color:#eee;border:0;border-radius:10px;padding:12px 22p
   <div id="oldicon" hidden style="max-width:360px;text-align:center;color:#facc15;font-size:.9rem;line-height:1.4">Per registrare anche in background: elimina questa icona dalla Home, apri <b>voice2code.nerosdmf.workers.dev</b> in Safari e fai Condividi › Aggiungi a Home.</div>
   <section id="notes"></section>
   <div id="view"><pre id="vtext"></pre><div class="bar"><button id="vcopy">Copia</button><button id="vsave">Scarica</button><button id="vclose">Chiudi</button></div></div>
-  <small style="color:#555">web app v1.0.14</small>
+  <small style="color:#555">web app v1.0.15</small>
 </main>
 <script>
 const RATE = 16000, PART_SEC = 240, MAX_SEC = 3600;
@@ -186,7 +187,37 @@ document.addEventListener('visibilitychange', () => {
   if (!recording && stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
 });
 
+// ---------- onda: si muove con la voce mentre registri ----------
+let wctx = null, wan = null, wsrc = null, wraf = 0;
+const whist = new Array(32).fill(0);
+function waveStart() {
+  // AudioContext creato nel tocco (Safari lo esige); se resta sospeso, l'onda pulsa a tempo
+  try { const AC = window.AudioContext || window.webkitAudioContext; if (!wctx || wctx.state === 'closed') wctx = new AC(); wctx.resume(); } catch (e) { wctx = null; }
+}
+function waveAttach() {
+  try { wsrc = wctx.createMediaStreamSource(stream); wan = wctx.createAnalyser(); wan.fftSize = 512; wsrc.connect(wan); } catch (e) { wan = null; }
+  $('wave').style.visibility = 'visible';
+  const data = new Uint8Array(512), c = $('wave'), g = c.getContext('2d');
+  const loop = () => {
+    let v;
+    if (wan && wctx.state === 'running') { wan.getByteTimeDomainData(data); let pk = 0; for (const x of data) pk = Math.max(pk, Math.abs(x - 128)); v = Math.sqrt(pk / 128) * 1.3; }
+    else v = 0.25 + 0.2 * Math.abs(Math.sin(Date.now() / 300));
+    whist.shift(); whist.push(v);
+    const w = c.width, h = c.height, bw = w / whist.length;
+    g.clearRect(0, 0, w, h); g.fillStyle = '#f87171';
+    whist.forEach((x, i) => { const bh = Math.max(3, Math.min(1, x) * h); g.fillRect(i * bw + 1.5, (h - bh) / 2, bw - 3, bh); });
+    wraf = setTimeout(loop, 70);
+  };
+  clearTimeout(wraf); loop();
+}
+function waveStop() {
+  clearTimeout(wraf); whist.fill(0); $('wave').style.visibility = 'hidden';
+  try { wsrc && wsrc.disconnect(); } catch (e) {}
+  wsrc = null; wan = null;
+}
+
 async function start() {
+  waveStart();
   if (!window.MediaRecorder) return say('Questo browser non può registrare: aggiorna iOS o usa Chrome.', 'err');
   say('Accendo il microfono…');
   // il microfono resta aperto finché la web app è in primo piano: iPhone chiede il permesso una volta sola
@@ -198,6 +229,7 @@ async function start() {
   recId = new Date().toISOString().replace(/[:.]/g, '-') + '_' + Math.random().toString(36).slice(2, 10);
   partNo = 0; recording = true;
   newRecorder();
+  waveAttach();
   t0 = Date.now(); $('timer').textContent = '00:00';
   tick = setInterval(() => {
     const s = Math.floor((Date.now() - t0) / 1000);
@@ -214,7 +246,7 @@ async function start() {
 
 function stop() {
   if (!recording) return;
-  recording = false; clearInterval(tick);
+  recording = false; clearInterval(tick); waveStop();
   $('rec').classList.remove('on');
   try { wake && wake.release(); } catch (e) {}
   if (Date.now() - t0 < 1000) say('Registrazione troppo corta.', 'err');
